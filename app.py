@@ -277,16 +277,19 @@ def build_excel(data: dict) -> io.BytesIO:
     steps_d  = data["steps"]
     variants = data["variants"]
 
+    # 固定列: No / ID / 項目名称 / 単位 / パターン / 概要 / 備考  (A〜G)
     N_FIXED = 7
     glabels = [sc_map[sc] for sc in sc_list]
     N_TOTAL = N_FIXED + len(glabels)
 
+    # ── 列幅 ──────────────────────────────────────────────────────────
     col_widths = [5, 10, 20, 6, 6, 70, 14]   # No, ID, 項目名称, 単位, パターン, 概要, 備考
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     for gi in range(N_FIXED + 1, N_TOTAL + 1):
         ws.column_dimensions[get_column_letter(gi)].width = 13
 
+    # ── タイトル行 ────────────────────────────────────────────────────
     ws.row_dimensions[1].height = 26
     c = ws.cell(1, 1, "算出パターンデータ一覧")
     c.fill      = _fl(COLORS["title_bg"])
@@ -294,6 +297,7 @@ def build_excel(data: dict) -> io.BytesIO:
     c.alignment = Alignment(horizontal="left", vertical="center")
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=N_TOTAL)
 
+    # ── 注記 ──────────────────────────────────────────────────────────
     notes = [
         "■ 単位：時間 / 日数 / 回数 / その他",
         "■ バリアント記号（①②③…）が同じ行は同一の計算ロジック。パターン列に記号がある場合はそのコードに適用あり。",
@@ -307,6 +311,7 @@ def build_excel(data: dict) -> io.BytesIO:
         c.alignment = Alignment(horizontal="left", vertical="center")
         ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=N_TOTAL)
 
+    # ── ヘッダー1行目 ─────────────────────────────────────────────────
     H1 = 6
     ws.row_dimensions[H1].height = 22
     for ci, h in enumerate(["No", "ID", "項目名称", "単位", "パターン", "概要", "備考"], 1):
@@ -316,6 +321,7 @@ def build_excel(data: dict) -> io.BytesIO:
         put(ws, H1, gi, gl, bg=COLORS["hdr_bg"], fg=COLORS["hdr_fg"],
             bold=True, halign="center")
 
+    # ── ヘッダー2行目（パターン▼） ───────────────────────────────────
     H2 = 7
     ws.row_dimensions[H2].height = 16
     for ci in range(1, N_FIXED + 1):
@@ -324,12 +330,14 @@ def build_excel(data: dict) -> io.BytesIO:
         put(ws, H2, gi, "パターン ▼", bg=COLORS["hdr2_bg"],
             fg=COLORS["hdr_fg"], halign="center", sz=8)
 
+    # 固定列を H1-H2 縦結合
     ws.merge_cells(start_row=H1, start_column=1, end_row=H2, end_column=1)
     for ci in range(2, N_FIXED + 1):
         ws.merge_cells(start_row=H1, start_column=ci, end_row=H2, end_column=ci)
 
     ws.freeze_panes = ws.cell(H2 + 1, 1)
 
+    # ── データ行 ──────────────────────────────────────────────────────
     cur = H2 + 1
     no  = 1
 
@@ -347,6 +355,7 @@ def build_excel(data: dict) -> io.BytesIO:
         row_start = cur
         row_end   = cur + n_rows - 1
 
+        # A〜D: No / ID / 項目名称 / 単位（複数バリアントは縦結合）
         put(ws, row_start, 1, no,       halign="center")
         put(ws, row_start, 2, aid,      halign="center")
         put(ws, row_start, 3, aid_name, halign="left")
@@ -362,6 +371,7 @@ def build_excel(data: dict) -> io.BytesIO:
                     end_row=row_end,     end_column=col,
                 )
 
+        # E〜: バリアントごとに1行
         for vi_idx, vn in enumerate(all_variants):
             r         = row_start + vi_idx
             vi        = CIRCLE.index(vn) if vn in CIRCLE else 0
@@ -373,9 +383,9 @@ def build_excel(data: dict) -> io.BytesIO:
 
             ws.row_dimensions[r].height = max(30, len(step_list) * 15 + 4)
 
-            put(ws, r, 5, vn, bg=vcolor, bold=True, halign="center", sz=13)
-            put(ws, r, 6, summary)
-            put(ws, r, 7, "")
+            put(ws, r, 5, vn, bg=vcolor, bold=True, halign="center", sz=13)  # E: パターン
+            put(ws, r, 6, summary)                                             # F: 概要
+            put(ws, r, 7, "")                                                  # G: 備考
 
             for gi, sc in enumerate(sc_list, start=N_FIXED + 1):
                 if sc_v.get(sc) == vn:
@@ -394,308 +404,115 @@ def build_excel(data: dict) -> io.BytesIO:
     return buf
 
 
-# ── 特定数値照合 ──────────────────────────────────────────────────────────
-
-TARGET_B_VALUE = "属性別特定時刻・特定値設定_特定数値を決定するためのパターン設定"
-
-
-def _normalize_cond(cond: str) -> str:
-    """条件文字列から勤怠系の単位文字を除去して正規化する"""
-    return re.sub(r'(?:時間|分間|分|日間|日|回|件|人|[hH](?=\d|\b))', '', cond).strip()
-
-
-def parse_condition(cond_str: str, value: float) -> bool:
-    """
-    I列の条件文字列と数値を比較して合否を返す。
-
-    対応パターン:
-      100以上 / 100超 / 100以下 / 100未満
-      100以上200未満（連続記述）
-      100以上 かつ 200未満（かつ区切り）
-      >=100 / <50 などの記号形式
-      100（数値のみ → 等値）
-    """
-    cond = _normalize_cond(cond_str.strip())
-    if not cond or cond in ('-', '－', '---'):
-        return False
-
-    num_pat = r'[\d,]+\.?\d*'
-    op_pat  = r'(?:以上|より大きい|超|以下|未満)'
-
-    # かつ区切りの複合条件
-    if 'かつ' in cond:
-        parts = [_normalize_cond(p) for p in cond.split('かつ')]
-        return all(parse_condition(p, value) for p in parts)
-
-    # 連続複合条件: "100以上200未満"
-    m = re.match(rf'^({num_pat})\s*({op_pat})\s*({num_pat})\s*({op_pat})$', cond)
-    if m:
-        n1, op1 = float(m.group(1).replace(',', '')), m.group(2)
-        n2, op2 = float(m.group(3).replace(',', '')), m.group(4)
-
-        def _chk(n, op, v):
-            if op == '以上':               return v >= n
-            if op in ('より大きい', '超'): return v > n
-            if op == '以下':               return v <= n
-            if op == '未満':               return v < n
-            return False
-
-        return _chk(n1, op1, value) and _chk(n2, op2, value)
-
-    # 単純条件: "100以上"
-    m = re.match(rf'^({num_pat})\s*({op_pat})$', cond)
-    if m:
-        n, op = float(m.group(1).replace(',', '')), m.group(2)
-        if op == '以上':               return value >= n
-        if op in ('より大きい', '超'): return value > n
-        if op == '以下':               return value <= n
-        if op == '未満':               return value < n
-
-    # 記号形式: ">=100", "<= 50"
-    m = re.match(r'^(>=|<=|>|<|==?|!=)\s*([\d,]+\.?\d*)$', cond)
-    if m:
-        op, n = m.group(1), float(m.group(2).replace(',', ''))
-        if op == '>=':        return value >= n
-        if op == '<=':        return value <= n
-        if op == '>':         return value > n
-        if op == '<':         return value < n
-        if op in ('=', '=='): return value == n
-        if op == '!=':        return value != n
-
-    # 数値のみ（等値）
-    m = re.match(r'^([\d,]+\.?\d*)$', cond)
-    if m:
-        return value == float(m.group(1).replace(',', ''))
-
-    return False
-
-
-def parse_csv_text(text: str) -> list:
-    """テキストからCSVを読み込む（カンマ・タブ区切りを自動判定）"""
-    if not text or not text.strip():
-        return []
-    text = text.strip()
-    try:
-        dialect = csv.Sniffer().sniff(text[:4096], delimiters=',\t')
-        reader  = csv.DictReader(io.StringIO(text), dialect=dialect)
-    except csv.Error:
-        reader = csv.DictReader(io.StringIO(text))
-    try:
-        return list(reader)
-    except Exception:
-        return []
-
-
-def run_matching(input1_rows: list, input2_rows: list,
-                 id_col: str, val_col: str,
-                 b_col: str, k_col: str, i_col: str, m_col: str) -> list:
-    """特定数値マスタ照合処理"""
-    master = [r for r in input2_rows
-              if r.get(b_col, "").strip() == TARGET_B_VALUE]
-
-    k_map: dict = defaultdict(list)
-    for r in master:
-        k = r.get(k_col, "").strip()
-        if k:
-            k_map[k].append((r.get(i_col, "").strip(), r.get(m_col, "").strip()))
-
-    results = []
-    for row in input1_rows:
-        id_name = row.get(id_col, "").strip()
-        raw_val = row.get(val_col, "").strip()
-
-        try:
-            value = float(raw_val.replace(",", "").replace("，", ""))
-        except ValueError:
-            results.append({
-                "対象ID+名称":         id_name,
-                "入力値":              raw_val,
-                "適用されたI列の条件": "数値変換エラー",
-                "返す値（M列）":       "-",
-                "ステータス":          "❌ エラー",
-            })
-            continue
-
-        candidates = k_map.get(id_name, [])
-        matched_i = matched_m = None
-        for i_val, m_val in candidates:
-            if parse_condition(i_val, value):
-                matched_i, matched_m = i_val, m_val
-                break
-
-        if matched_m is not None:
-            results.append({
-                "対象ID+名称":         id_name,
-                "入力値":              raw_val,
-                "適用されたI列の条件": matched_i,
-                "返す値（M列）":       matched_m,
-                "ステータス":          "✅ 合致",
-            })
-        elif not candidates:
-            results.append({
-                "対象ID+名称":         id_name,
-                "入力値":              raw_val,
-                "適用されたI列の条件": "-",
-                "返す値（M列）":       "-",
-                "ステータス":          "⚠️ IDが見つかりません",
-            })
-        else:
-            results.append({
-                "対象ID+名称":         id_name,
-                "入力値":              raw_val,
-                "適用されたI列の条件": "-",
-                "返す値（M列）":       "-",
-                "ステータス":          "⚠️ 条件に合致なし",
-            })
-
-    return results
-
-
-def build_match_excel(results: list) -> io.BytesIO:
-    """照合結果をExcelに出力する"""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "照合結果"
-
-    headers = ["対象ID+名称", "入力値", "適用されたI列の条件", "返す値（M列）", "ステータス"]
-    widths  = [35, 12, 30, 20, 18]
-
-    for ci, (h, w) in enumerate(zip(headers, widths), 1):
-        ws.column_dimensions[get_column_letter(ci)].width = w
-        put(ws, 1, ci, h, bg=COLORS["hdr_bg"], fg=COLORS["hdr_fg"],
-            bold=True, halign="center")
-
-    ws.row_dimensions[1].height = 20
-
-    for ri, row in enumerate(results, start=2):
-        status = row.get("ステータス", "")
-        if "✅" in status:
-            bg = "E2EFDA"
-        elif "❌" in status:
-            bg = "FCE4D6"
-        else:
-            bg = "FFF2CC"
-        for ci, h in enumerate(headers, 1):
-            put(ws, ri, ci, row.get(h, ""), bg=bg)
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
-
-
-# ── Streamlit UI ──────────────────────────────────────────────────────
 APP_NAME = "算出パターンデータ一覧"
 
+# ── Streamlit UI ──────────────────────────────────────────────────────
 st.set_page_config(
     page_title=APP_NAME,
     page_icon="📊",
     layout="wide",
 )
 st.title(f"📊 {APP_NAME}")
+st.caption("CSVをアップロード → 集約設定コードごとのパターンマトリクス付きExcelを生成します。")
 st.divider()
 
-tab1, tab2 = st.tabs(["📊 算出パターンデータ一覧", "🔍 特定数値照合"])
+uploaded = st.file_uploader("CSVをドラッグ or クリックして選択", type=["csv"])
 
-# ════════════════════════════════════════════════════════════════════════
-# Tab 1 : 既存機能
-# ════════════════════════════════════════════════════════════════════════
-with tab1:
-    st.caption("CSVをアップロード → 集約設定コードごとのパターンマトリクス付きExcelを生成します。")
+if uploaded:
+    raw = uploaded.read()
+    content, enc = decode_csv(raw)
+    if content is None:
+        st.error("文字コードを判定できませんでした。UTF-8 または CP932 のCSVをご確認ください。")
+        st.stop()
 
-    uploaded = st.file_uploader("CSVをドラッグ or クリックして選択", type=["csv"])
+    with st.spinner("解析中…"):
+        data = process(content)
+    if data is None:
+        st.error("CSVを読み取れませんでした。ヘッダー行を含む正しい形式かご確認ください。")
+        st.stop()
 
-    if uploaded:
-        raw = uploaded.read()
-        content, enc = decode_csv(raw)
-        if content is None:
-            st.error("文字コードを判定できませんでした。UTF-8 または CP932 のCSVをご確認ください。")
-            st.stop()
-
-        with st.spinner("解析中…"):
-            data = process(content)
-        if data is None:
-            st.error("CSVを読み取れませんでした。ヘッダー行を含む正しい形式かご確認ください。")
-            st.stop()
-
-        with st.sidebar:
-            st.header("📋 集約設定コード一覧")
-            st.caption(f"合計 {len(data['sc_list'])} コード")
-            st.divider()
-            for sc in data["sc_list"]:
-                st.markdown(f"**`{sc}`** {data['sc_map'][sc]}")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("文字コード",     enc)
-        c2.metric("集約設定コード", f"{len(data['sc_list'])} 件")
-        c3.metric("集約値ID",       f"{len(data['aid_list'])} 件")
-        c4.metric("データ行数",     f"{data['n_rows']} 行")
+    # ── サイドバー: 集約設定コード一覧
+    with st.sidebar:
+        st.header("📋 集約設定コード一覧")
+        st.caption(f"合計 {len(data['sc_list'])} コード")
         st.divider()
+        for sc in data["sc_list"]:
+            st.markdown(f"**`{sc}`** {data['sc_map'][sc]}")
 
-        st.subheader("📋 データプレビュー")
+    # ── メトリクス
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("文字コード",     enc)
+    c2.metric("集約設定コード", f"{len(data['sc_list'])} 件")
+    c3.metric("集約値ID",       f"{len(data['aid_list'])} 件")
+    c4.metric("データ行数",     f"{data['n_rows']} 行")
+    st.divider()
 
-        preview_rows = []
-        no = 1
-        for aid in data["aid_list"]:
-            aname      = data["aid_map"][aid]
-            sc_v, vdet = data["variants"][aid]
-            all_v      = sorted(set(sc_v.values()),
-                                key=lambda v: CIRCLE.index(v) if v in CIRCLE else 99)
-            unit = detect_unit(aname)
-            for vn in all_v:
-                rep_sc    = vdet[vn][0]
-                step_list = sorted(data["steps"].get((rep_sc, aid), []),
-                                   key=lambda s: int(s["ord"]) if s["ord"].isdigit() else 999)
-                desc = generate_description(aname, step_list)
-                apply_codes = [data["sc_map"][sc]
-                               for sc in data["sc_list"] if sc_v.get(sc) == vn]
-                preview_rows.append({
-                    "No":       no,
-                    "ID":       aid,
-                    "項目名称": aname,
-                    "単位":     unit,
-                    "パターン": vn,
-                    "計算式概要": desc,
-                    "適用コード": " / ".join(apply_codes),
-                })
-            no += 1
+    # ── データプレビュー
+    st.subheader("📋 データプレビュー")
 
-        st.dataframe(
-            preview_rows,
-            use_container_width=True,
-            hide_index=True,
-            height=420,
-            column_config={
-                "No":       st.column_config.NumberColumn(width="small"),
-                "ID":       st.column_config.TextColumn(width="small"),
-                "項目名称": st.column_config.TextColumn(width="medium"),
-                "単位":     st.column_config.TextColumn(width="small"),
-                "パターン": st.column_config.TextColumn(width="small"),
-                "計算式概要": st.column_config.TextColumn(width="large"),
-                "適用コード": st.column_config.TextColumn(width="large"),
-            },
-        )
-        st.divider()
+    preview_rows = []
+    no = 1
+    for aid in data["aid_list"]:
+        aname      = data["aid_map"][aid]
+        sc_v, vdet = data["variants"][aid]
+        all_v      = sorted(set(sc_v.values()),
+                            key=lambda v: CIRCLE.index(v) if v in CIRCLE else 99)
+        unit = detect_unit(aname)
+        for vn in all_v:
+            rep_sc    = vdet[vn][0]
+            step_list = sorted(data["steps"].get((rep_sc, aid), []),
+                               key=lambda s: int(s["ord"]) if s["ord"].isdigit() else 999)
+            desc = generate_description(aname, step_list)
+            apply_codes = [data["sc_map"][sc]
+                           for sc in data["sc_list"] if sc_v.get(sc) == vn]
+            preview_rows.append({
+                "No":         no,
+                "ID":         aid,
+                "項目名称":   aname,
+                "単位":       unit,
+                "パターン":   vn,
+                "計算式概要": desc,
+                "適用コード": " / ".join(apply_codes),
+            })
+        no += 1
 
-        with st.spinner("Excel生成中…"):
-            buf     = build_excel(data)
-            outname = uploaded.name.replace(".csv", f"_{APP_NAME}.xlsx")
+    st.dataframe(
+        preview_rows,
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        column_config={
+            "No":         st.column_config.NumberColumn(width="small"),
+            "ID":         st.column_config.TextColumn(width="small"),
+            "項目名称":   st.column_config.TextColumn(width="medium"),
+            "単位":       st.column_config.TextColumn(width="small"),
+            "パターン":   st.column_config.TextColumn(width="small"),
+            "計算式概要": st.column_config.TextColumn(width="large"),
+            "適用コード": st.column_config.TextColumn(width="large"),
+        },
+    )
+    st.divider()
 
-        st.success("✅ 生成完了！下のボタンからダウンロードしてください。")
-        st.download_button(
-            label="📥 Excelをダウンロード",
-            data=buf.getvalue(),
-            file_name=outname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
-        )
+    # ── Excel 生成 & ダウンロード
+    with st.spinner("Excel生成中…"):
+        buf     = build_excel(data)
+        outname = uploaded.name.replace(".csv", f"_{APP_NAME}.xlsx")
 
-    else:
-        st.info("👆 CSVファイルをドラッグするか、クリックして選択してください。")
-        with st.sidebar:
-            st.header("📋 使い方")
-            st.markdown("""
+    st.success("✅ 生成完了！下のボタンからダウンロードしてください。")
+    st.download_button(
+        label="📥 Excelをダウンロード",
+        data=buf.getvalue(),
+        file_name=outname,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+    )
+
+else:
+    st.info("👆 CSVファイルをドラッグするか、クリックして選択してください。")
+    with st.sidebar:
+        st.header("📋 使い方")
+        st.markdown("""
 1. リアルタイム集約式設定CSVをアップロード
 2. 画面のテーブルでデータを確認
 3. **Excelをダウンロード**ボタンをクリック
@@ -703,208 +520,7 @@ with tab1:
 **Excelの出力内容**
 - 集約値ID ごとに1行（複数パターンは行分割）
 - A〜D列は同一IDで縦結合
-- E列：計算式の日本語概要
-- G列〜：集約設定コードごとの適用パターン
+- E列：パターン（①②③）
+- F列：計算式の日本語概要
+- H列〜：集約設定コードごとの適用パターン
 """)
-
-
-# ════════════════════════════════════════════════════════════════════════
-# Tab 2 : 特定数値照合
-# ════════════════════════════════════════════════════════════════════════
-with tab2:
-    st.caption(
-        "リアルタイムデータと特定数値マスタを照合し、"
-        "条件に合致するM列の値を特定します。"
-    )
-
-    st.markdown("""
-**処理フロー**
-1. インプット1（リアルタイムデータ）の各行から ID+名称 と 数値 を読み取る
-2. インプット2（特定数値マスタ）の **B列 = 特定フィルタ文字列** の行のみを対象とする
-3. **K列 = ID+名称** が一致する行を探す
-4. **I列の条件**（例：`100以上`、`50未満`）と数値を比較する
-5. 条件合致 → **M列の値** を返す
-""")
-    st.divider()
-
-    # ── 入力エリア ──────────────────────────────────────────────────────
-    col_l, col_r = st.columns(2, gap="large")
-
-    with col_l:
-        st.subheader("インプット1：リアルタイムデータ")
-        m1 = st.radio("入力方法", ["テキスト貼り付け", "ファイルアップロード"],
-                      key="in1_method", horizontal=True)
-        input1_text = ""
-        if m1 == "テキスト貼り付け":
-            input1_text = st.text_area(
-                "CSVを貼り付け（1行目がヘッダー行）",
-                height=220,
-                placeholder=(
-                    "ID+名称,数値\n"
-                    "ID001_テスト名称,150\n"
-                    "ID002_サンプル名称,30"
-                ),
-                key="in1_text",
-            )
-        else:
-            f1 = st.file_uploader("CSVをアップロード", type=["csv"], key="in1_file")
-            if f1:
-                raw1, _ = decode_csv(f1.read())
-                input1_text = raw1 or ""
-
-    with col_r:
-        st.subheader("インプット2：特定数値マスタ")
-        m2 = st.radio("入力方法", ["テキスト貼り付け", "ファイルアップロード"],
-                      key="in2_method", horizontal=True)
-        input2_text = ""
-        if m2 == "テキスト貼り付け":
-            input2_text = st.text_area(
-                "CSVを貼り付け（1行目がヘッダー行）",
-                height=220,
-                placeholder=(
-                    "B列,K列,I列,M列\n"
-                    f"{TARGET_B_VALUE},ID001_テスト名称,100以上,返す値A\n"
-                    f"{TARGET_B_VALUE},ID002_サンプル名称,50未満,返す値B"
-                ),
-                key="in2_text",
-            )
-        else:
-            f2 = st.file_uploader("CSVをアップロード", type=["csv"], key="in2_file")
-            if f2:
-                raw2, _ = decode_csv(f2.read())
-                input2_text = raw2 or ""
-
-    input1_rows = parse_csv_text(input1_text)
-    input2_rows = parse_csv_text(input2_text)
-
-    # ── 列設定 ──────────────────────────────────────────────────────────
-    id_col = val_col = b_col = k_col = i_col = m_col = ""
-
-    if input1_rows or input2_rows:
-        with st.expander("⚙️ 列マッピング設定", expanded=True):
-            set_l, set_r = st.columns(2, gap="large")
-
-            with set_l:
-                st.markdown("**インプット1 の列指定**")
-                hdrs1 = list(input1_rows[0].keys()) if input1_rows else ["（データなし）"]
-                id_col  = st.selectbox("ID+名称の列",  hdrs1, key="sel_id")
-                val_col = st.selectbox(
-                    "数値の列",
-                    hdrs1,
-                    index=min(1, len(hdrs1) - 1),
-                    key="sel_val",
-                )
-
-            with set_r:
-                st.markdown("**インプット2 の列指定**")
-                hdrs2 = list(input2_rows[0].keys()) if input2_rows else ["（データなし）"]
-
-                def _pick(options, candidates, fallback=0):
-                    for c in candidates:
-                        if c in options:
-                            return options.index(c)
-                    return min(fallback, len(options) - 1)
-
-                b_col = st.selectbox(
-                    "B列（フィルタ列）",
-                    hdrs2,
-                    index=_pick(hdrs2, ["B列", "B", "分類", "設定種別"]),
-                    key="sel_b",
-                )
-                k_col = st.selectbox(
-                    "K列（ID+名称）",
-                    hdrs2,
-                    index=_pick(hdrs2, ["K列", "K", "ID+名称", "名称"], 1),
-                    key="sel_k",
-                )
-                i_col = st.selectbox(
-                    "I列（条件）",
-                    hdrs2,
-                    index=_pick(hdrs2, ["I列", "I", "条件", "判定条件"], 2),
-                    key="sel_i",
-                )
-                m_col = st.selectbox(
-                    "M列（返す値）",
-                    hdrs2,
-                    index=_pick(hdrs2, ["M列", "M", "返す値", "出力値"], 3),
-                    key="sel_m",
-                )
-
-            st.caption(
-                f"フィルタ対象B列の値（固定）: "
-                f"`{TARGET_B_VALUE}`"
-            )
-
-    st.divider()
-
-    # ── 実行ボタン ──────────────────────────────────────────────────────
-    can_run = bool(input1_rows and input2_rows and id_col and val_col
-                   and b_col and k_col and i_col and m_col)
-    if st.button("🔍 照合実行", type="primary",
-                 use_container_width=True, disabled=not can_run):
-
-        with st.spinner("照合処理中…"):
-            results = run_matching(
-                input1_rows, input2_rows,
-                id_col, val_col,
-                b_col, k_col, i_col, m_col,
-            )
-
-        ok_cnt   = sum(1 for r in results if "✅" in r["ステータス"])
-        warn_cnt = sum(1 for r in results if "⚠️" in r["ステータス"])
-        err_cnt  = sum(1 for r in results if "❌" in r["ステータス"])
-
-        st.success(f"✅ 照合完了：合計 {len(results)} 件処理")
-
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("✅ 合致",   ok_cnt)
-        mc2.metric("⚠️ 未合致", warn_cnt)
-        mc3.metric("❌ エラー", err_cnt)
-        st.divider()
-
-        # 結果テーブル
-        st.subheader("📋 照合結果一覧")
-        st.dataframe(
-            results,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "対象ID+名称":         st.column_config.TextColumn(width="medium"),
-                "入力値":              st.column_config.TextColumn(width="small"),
-                "適用されたI列の条件": st.column_config.TextColumn(width="medium"),
-                "返す値（M列）":       st.column_config.TextColumn(width="medium"),
-                "ステータス":          st.column_config.TextColumn(width="small"),
-            },
-        )
-
-        # 合致した行の詳細（出力フォーマット準拠）
-        matched = [r for r in results if "✅" in r["ステータス"]]
-        if matched:
-            st.divider()
-            st.subheader("📄 判定結果詳細（合致のみ）")
-            for r in matched:
-                with st.expander(
-                    f"✅ {r['対象ID+名称']}  →  **{r['返す値（M列）']}**"
-                ):
-                    st.markdown(f"- **対象ID+名称**: {r['対象ID+名称']}")
-                    st.markdown(f"- **適用されたI列の条件**: `{r['適用されたI列の条件']}`")
-                    st.markdown(f"- **返す値（M列）**: **{r['返す値（M列）']}**")
-
-        # Excel ダウンロード
-        st.divider()
-        match_buf = build_match_excel(results)
-        st.download_button(
-            label="📥 照合結果をExcelでダウンロード",
-            data=match_buf.getvalue(),
-            file_name="特定数値照合結果.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-
-    elif not can_run:
-        if not input1_rows and not input2_rows:
-            st.info("👆 インプット1・インプット2のデータを入力してから「照合実行」を押してください。")
-        elif not input1_rows:
-            st.warning("インプット1（リアルタイムデータ）が未入力です。")
-        elif not input2_rows:
-            st.warning("インプット2（特定数値マスタ）が未入力です。")
