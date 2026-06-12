@@ -314,7 +314,13 @@ def build_excel(data: dict) -> io.BytesIO:
 
     # ── ヘッダー1行目 ─────────────────────────────────────────────────
     H1 = 6
-    ws.row_dimensions[H1].height = 22
+    # H+列のヘッダー文字数から必要行数を算出して行高を自動決定
+    # 列幅13 / 全角2文字 ≒ 6〜7文字/行
+    chars_per_line = max(1, int(13 / 1.8))
+    max_lines = max(
+        (len(gl) + chars_per_line - 1) // chars_per_line for gl in glabels
+    ) if glabels else 1
+    ws.row_dimensions[H1].height = max(22, max_lines * (FS + 3) + 4)
     for ci, h in enumerate(["No", "ID", "項目名称", "単位", "パターン", "概要", "備考"], 1):
         put(ws, H1, ci, h, bg=COLORS["hdr_bg"], fg=COLORS["hdr_fg"],
             bold=True, halign="center")
