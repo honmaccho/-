@@ -251,7 +251,7 @@ def process(content: str):
                 n_rows=len(rows))
 
 # ── スタイルヘルパー ──────────────────────────────────────────────────
-def _s(): return Side(style="thin", color="BFBFBF")
+def _s(): return Side(style="thin", color="000000")
 def _bdr(): s = _s(); return Border(left=s, right=s, top=s, bottom=s)
 def _fl(c): return PatternFill("solid", fgColor=c)
 
@@ -269,6 +269,7 @@ def build_excel(data: dict) -> io.BytesIO:
     wb = Workbook()
     ws = wb.active
     ws.title = "パターン一覧"
+    ws.sheet_view.showGridLines = False
 
     sc_map   = data["sc_map"]
     sc_list  = data["sc_list"]
@@ -327,7 +328,7 @@ def build_excel(data: dict) -> io.BytesIO:
     for ci in range(1, N_FIXED + 1):
         put(ws, H2, ci, "", bg=COLORS["hdr2_bg"], fg=COLORS["hdr_fg"])
     for gi in range(N_FIXED + 1, N_TOTAL + 1):
-        put(ws, H2, gi, "パターン ▼", bg=COLORS["hdr2_bg"],
+        put(ws, H2, gi, "", bg=COLORS["hdr2_bg"],
             fg=COLORS["hdr_fg"], halign="center", sz=8)
 
     # 固定列を H1-H2 縦結合
@@ -374,22 +375,20 @@ def build_excel(data: dict) -> io.BytesIO:
         # E〜: バリアントごとに1行
         for vi_idx, vn in enumerate(all_variants):
             r         = row_start + vi_idx
-            vi        = CIRCLE.index(vn) if vn in CIRCLE else 0
-            vcolor    = COLORS["v"][vi % len(COLORS["v"])]
             rep_sc    = vdet[vn][0]
             step_list = sorted(steps_d.get((rep_sc, aid), []),
                                key=lambda s: int(s["ord"]) if s["ord"].isdigit() else 999)
             summary   = generate_description(aid_name, step_list)
 
-            ws.row_dimensions[r].height = max(30, len(step_list) * 15 + 4)
+            ws.row_dimensions[r].height = FS + 5
 
-            put(ws, r, 5, vn, bg=vcolor, bold=True, halign="center", sz=13)  # E: パターン
-            put(ws, r, 6, summary)                                             # F: 概要
-            put(ws, r, 7, "")                                                  # G: 備考
+            put(ws, r, 5, vn, bold=True, halign="center", sz=13)  # E: パターン
+            put(ws, r, 6, summary)                                  # F: 概要
+            put(ws, r, 7, "")                                       # G: 備考
 
             for gi, sc in enumerate(sc_list, start=N_FIXED + 1):
                 if sc_v.get(sc) == vn:
-                    put(ws, r, gi, vn, bg=vcolor, bold=True, halign="center")
+                    put(ws, r, gi, vn, bold=True, halign="center")
                 else:
                     put(ws, r, gi, "-", halign="center")
 
