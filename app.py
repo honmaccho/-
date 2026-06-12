@@ -322,24 +322,10 @@ def build_excel(data: dict) -> io.BytesIO:
         put(ws, H1, gi, gl, bg=COLORS["hdr_bg"], fg=COLORS["hdr_fg"],
             bold=True, halign="center")
 
-    # ── ヘッダー2行目（パターン▼） ───────────────────────────────────
-    H2 = 7
-    ws.row_dimensions[H2].height = 16
-    for ci in range(1, N_FIXED + 1):
-        put(ws, H2, ci, "", bg=COLORS["hdr2_bg"], fg=COLORS["hdr_fg"])
-    for gi in range(N_FIXED + 1, N_TOTAL + 1):
-        put(ws, H2, gi, "", bg=COLORS["hdr2_bg"],
-            fg=COLORS["hdr_fg"], halign="center", sz=8)
-
-    # 固定列を H1-H2 縦結合
-    ws.merge_cells(start_row=H1, start_column=1, end_row=H2, end_column=1)
-    for ci in range(2, N_FIXED + 1):
-        ws.merge_cells(start_row=H1, start_column=ci, end_row=H2, end_column=ci)
-
-    ws.freeze_panes = ws.cell(H2 + 1, 1)
+    ws.freeze_panes = ws.cell(H1 + 1, 1)
 
     # ── データ行 ──────────────────────────────────────────────────────
-    cur = H2 + 1
+    cur = H1 + 1
     no  = 1
 
     for aid in aid_list:
@@ -358,7 +344,7 @@ def build_excel(data: dict) -> io.BytesIO:
 
         # A〜D: No / ID / 項目名称 / 単位（複数バリアントは縦結合）
         put(ws, row_start, 1, no,       halign="center")
-        put(ws, row_start, 2, aid,      halign="center")
+        put(ws, row_start, 2, int(aid) if aid.isdigit() else aid, halign="center")
         put(ws, row_start, 3, aid_name, halign="left")
         put(ws, row_start, 4, unit,     halign="center")
 
@@ -382,20 +368,20 @@ def build_excel(data: dict) -> io.BytesIO:
 
             ws.row_dimensions[r].height = FS + 5
 
-            put(ws, r, 5, vn, bold=True, halign="center", sz=13)  # E: パターン
+            put(ws, r, 5, vn, halign="center", sz=13)  # E: パターン
             put(ws, r, 6, summary)                                  # F: 概要
             put(ws, r, 7, "")                                       # G: 備考
 
             for gi, sc in enumerate(sc_list, start=N_FIXED + 1):
                 if sc_v.get(sc) == vn:
-                    put(ws, r, gi, vn, bold=True, halign="center")
+                    put(ws, r, gi, vn, halign="center")
                 else:
                     put(ws, r, gi, "-", halign="center")
 
         no  += 1
         cur  = row_end + 1
 
-    ws.auto_filter.ref = f"A{H2}:{get_column_letter(N_TOTAL)}{cur - 1}"
+    ws.auto_filter.ref = f"A{H1}:{get_column_letter(N_TOTAL)}{cur - 1}"
 
     buf = io.BytesIO()
     wb.save(buf)
